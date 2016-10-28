@@ -1,50 +1,95 @@
-
-from sklearn.feature_extraction.text import CountVectorizer
+import itertools
 import pandas as pd
 import numpy as np
+import xgboost as xgb
 import random
+from urllib.parse import urlparse, parse_qs
+from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
-import sys
-reload(sys)
-sys.setdefaultencoding('utf-8')
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.pipeline import make_pipeline
 
-def getTokens(input):
-	tokensBySlash = str(input.encode('utf-8')).split('/')	#get tokens after splitting by slash
-	allTokens = []
-	for i in tokensBySlash:
-		tokens = str(i).split('-')	#get tokens after splitting by dash
-		tokensByDot = []
-		for j in range(0,len(tokens)):
-			tempTokens = str(tokens[j]).split('.')	#get tokens after splitting by dot
-			tokensByDot = tokensByDot + tempTokens
-		allTokens = allTokens + tokens + tokensByDot
-	allTokens = list(set(allTokens))	#remove redundant tokens
-	if 'com' in allTokens:
-		allTokens.remove('com')	#removing .com since it occurs a lot of times and it should not be included in our features
-	return allTokens
+from sklearn.ensemble import RandomForestClassifier
 
-allurls = 'C:\\Users\\Faizan Ahmad\\Desktop\\Url Classification Project\\Data to Use\\allurls.txt'	#path to our all urls file
-allurlscsv = pd.read_csv(allurls,',',error_bad_lines=False)	#reading file
-allurlsdata = pd.DataFrame(allurlscsv)	#converting to a dataframe
+np.random.seed(92016)
+random.seed(92016)
 
-allurlsdata = np.array(allurlsdata)	#converting it into an array
-random.shuffle(allurlsdata)	#shuffling
 
-y = [d[1] for d in allurlsdata]	#all labels 
-corpus = [d[0] for d in allurlsdata]	#all urls corresponding to a label (either good or bad)
-vectorizer = TfidfVectorizer(tokenizer=getTokens)	#get a vector for each url but use our customized tokenizer
-X = vectorizer.fit_transform(corpus)	#get the X vector
+def get_tokens(url):
+    parts = urlparse(url)
+    qs = parse_qs(parts.query)
+    path = parts.path
+    tokens = path.split('/')
+    for k, v in qs.items():
+        tokens.append(k)
+        for item in v:
+            tokens.append(item)
+    tokens = [item.split('.') for item in tokens]
+    return itertools.chain.from_iterable(tokens)
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)	#split into training and testing set 80/20 ratio
 
-lgs = LogisticRegression()	#using logistic regression
-lgs.fit(X_train, y_train)
-print(lgs.score(X_test, y_test))	#pring the score. It comes out to be 98%
+def print_stats(y, yhat, header):
+    print(header)
+    print('Accuracy score: ', accuracy_score(y, yhat))
+    print('ROC AUC: ', roc_auc_score(y, yhat))
+    print('confusion matrix: ', confusion_matrix(y, yhat))
+    tn, fp, fn, tp = confusion_matrix(y, yhat).ravel()
+    print('true negative: ', tn)
+    print('false positive: ', fp)
+    print('false negative: ', fn)
+    print('true positive: ', tp)
+    print()
 
-#checking some random URLs. The results come out to be expected. The first two are okay and the last four are malicious/phishing/bad
-X_predict = ['wikipedia.com','google.com/search=faizanahad','pakistanifacebookforever.com/getpassword.php/','www.radsport-voggel.de/wp-admin/includes/log.exe','ahrenhei.without-transfer.ru/nethost.exe','www.itidea.it/centroesteticosothys/img/_notes/gum.exe']
-X_predict = vectorizer.transform(X_predict)
-y_Predict = lgs.predict(X_predict)
-print y_Predict	#printing predicted values
 
+def main():
+    allurlsdata = pd.read_csv('data/data_phish.csv')  # reading file
+
+    allurlsdata = np.array(allurlsdata)
+    random.shuffle(allurlsdata)
+
+    y = allurlsdata[:, 1].astype(np.int8)
+    corpus = allurlsdata[:, 0]
+
+    X_train, X_test, y_train, y_test = train_test_split(corpus, y, stratify=y, test_size=0.3, random_state=92016)
+
+    lgs = make_pipeline(TfidfVectorizer(tokenizer=get_tokens),
+                        LogisticRegression(penalty='l1', C=.99, random_state=42, n_jobs=-1, class_weight='balanced'))
+    lgs.fit(X_train, y_train)
+
+    pred = lgs.predict(X_test)
+
+    print_stats(y_test, pred, 'LogisticRegressions')
+
+    rf = make_pipeline(TfidfVectorizer(tokenizer=get_tokens),
+                       RandomForestClassifier(n_estimators=100, min_samples_split=100, n_jobs=-1, random_state=92016,
+                                              class_weight='balanced'))
+
+    rf.fit(X_train, y_train)
+
+    pred = rf.predict(X_test)
+
+    print_stats(y_test, pred, 'RandomForest')
+
+    # xgb_clf = make_pipeline(TfidfVectorizer(tokenizer=get_tokens),
+    #                         xgb.XGBClassifier(learning_rate=.1, n_estimators=2000,
+    #                                           max_depth=11, scale_pos_weight=8,
+    #                                           seed=92016, min_child_weight=7,
+    #                                           subsample=.8, colsample_bytree=.8))
+    #
+    # xgb_clf.fit(X_train, y_train)
+
+    # pred = xgb_clf.predict(X_test)
+
+    # print_stats(y_test, pred, 'XGBoost')
+
+    # checking some random URLs. The results come out to be expected. The first two are okay and the last four are malicious/phishing/bad
+    # X_predict = ['wikipedia.com','google.com/search=faizanahad','pakistanifacebookforever.com/getpassword.php/','www.radsport-voggel.de/wp-admin/includes/log.exe','ahrenhei.without-transfer.ru/nethost.exe','www.itidea.it/centroesteticosothys/img/_notes/gum.exe']
+    # X_predict = vectorizer.transform(X_predict)
+    # y_Predict = lgs.predict(X_predict)
+    # print(y_Predict)	#printing predicted values
+
+
+if __name__ == '__main__':
+    main()
